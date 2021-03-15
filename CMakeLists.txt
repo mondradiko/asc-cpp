@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.9)
 
 project(asc-cpp VERSION 0.0.0)
 
+# TODO(marceline-cramer) Use system binaryen over the git submodule if available?
 set(BUILD_STATIC_LIB ON)
 add_subdirectory(binaryen/)
 include_directories(binaryen/src/)
