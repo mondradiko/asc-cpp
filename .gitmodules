@@ -1,3 +1,6 @@
 [submodule "binaryen"]
 	path = binaryen
 	url = https://github.com/WebAssembly/binaryen
+[submodule "wasm-c-api"]
+	path = wasm-c-api
+	url = https://github.com/WebAssembly/wasm-c-api
