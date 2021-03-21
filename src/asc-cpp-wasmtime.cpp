@@ -1,136 +1,114 @@
-/*
-Example of instantiating of the WebAssembly module and invoking its exported
-function.
-
-You can compile and run this example on Linux with:
-
-   cargo build --release -p wasmtime-c-api
-   cc examples/hello.cc \
-       -I crates/c-api/include \
-       -I crates/c-api/wasm-c-api/include \
-       target/release/libwasmtime.a \
-       -lpthread -ldl -lm \
-       -o hello
-   ./hello
-
-Note that on Windows and macOS the command will be similar, but you'll need
-to tweak the `-lpthread` and such annotations as well as the name of the
-`libwasmtime.a` file on Windows.
-*/
-
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <wasm.h>
-#include <wasmtime.h>
+#include <string.h>
+#include <inttypes.h>
 
-static void exit_with_error(const char *message, wasmtime_error_t *error, wasm_trap_t *trap);
+#include "asc-cpp-binaryen.h"
+#include "asc-cpp-wasmtime.h"
+#include "wasm.h"
 
-static wasm_trap_t* hello_callback(const wasm_val_vec_t* args, wasm_val_vec_t* results) {
-  printf("Calling back...\n");
-  printf("> Hello World!\n");
-  return NULL;
+#define own
+
+
+void print_frame(wasm_frame_t* frame) {
+  printf("> %%p @ 0x%zx = %"PRIu32".0x%zx\n",
+    //wasm_frame_instance(frame),
+    wasm_frame_module_offset(frame),
+    wasm_frame_func_index(frame),
+    wasm_frame_func_offset(frame)
+  );
 }
 
+
+
+// The good news: it builds and runs!
+// The bad news: if you give it the wrong Wasm file, it segfaults :(
+
+
+
 int asc_cpp_wasmtime() {
-  int ret = 0;
-  // Set up our compilation context. Note that we could also work with a
-  // `wasm_config_t` here to configure what feature are enabled and various
-  // compilation settings.
+  // Initialize.
   printf("Initializing...\n");
-  wasm_engine_t *engine = wasm_engine_new();
-  assert(engine != NULL);
+  wasm_engine_t* engine = wasm_engine_new();
+  wasm_store_t* store = wasm_store_new(engine);
 
-  // With an engine we can create a *store* which is a long-lived group of wasm
-  // modules.
-  wasm_store_t *store = wasm_store_new(engine);
-  assert(store != NULL);
-
-  // Read our input file, which in this case is a wasm text file.
-  FILE* file = fopen("examples/hello.wat", "r");
-  assert(file != NULL);
+  // Load binary.
+  printf("Loading binary...\n");
+  FILE* file = fopen("hello.wasm", "rb");
+  if (!file) {
+    printf("> Error loading module!\n");
+    return 1;
+  }
   fseek(file, 0L, SEEK_END);
   size_t file_size = ftell(file);
   fseek(file, 0L, SEEK_SET);
-  wasm_byte_vec_t wat;
-  wasm_byte_vec_new_uninitialized(&wat, file_size);
-  assert(fread(wat.data, file_size, 1, file) == 1);
+  wasm_byte_vec_t binary;
+  wasm_byte_vec_new_uninitialized(&binary, file_size);
+  if (fread(binary.data, file_size, 1, file) != 1) {
+    printf("> Error loading module!\n");
+    return 1;
+  }
   fclose(file);
 
-  // Parse the wat into the binary wasm format
-  wasm_byte_vec_t wasm;
-  wasmtime_error_t *error = wasmtime_wat2wasm(&wat, &wasm);
-  if (error != NULL)
-    exit_with_error("failed to parse wat", error, NULL);
-  wasm_byte_vec_delete(&wat);
-
-  // Now that we've got our binary webassembly we can compile our module.
+  // Compile.
   printf("Compiling module...\n");
-  wasm_module_t *module = NULL;
-  error = wasmtime_module_new(engine, &wasm, &module);
-  wasm_byte_vec_delete(&wasm);
-  if (error != NULL)
-    exit_with_error("failed to compile module", error, NULL);
+  own wasm_module_t* module = wasm_module_new(store, &binary);
+  if (!module) {
+    printf("> Error compiling module!\n");
+    return 1;
+  }
 
-  // Next up we need to create the function that the wasm module imports. Here
-  // we'll be hooking up a thunk function to the `hello_callback` native
-  // function above.
-  printf("Creating callback...\n");
-  wasm_functype_t *hello_ty = wasm_functype_new_0_0();
-  wasm_func_t *hello = wasm_func_new(store, hello_ty, hello_callback);
+  wasm_byte_vec_delete(&binary);
 
-  // With our callback function we can now instantiate the compiled module,
-  // giving us an instance we can then execute exports from. Note that
-  // instantiation can trap due to execution of the `start` function, so we need
-  // to handle that here too.
+  // Instantiate.
   printf("Instantiating module...\n");
-  wasm_trap_t *trap = NULL;
-  wasm_instance_t *instance = NULL;
-  wasm_extern_t* imports[] = { wasm_func_as_extern(hello) };
-  wasm_extern_vec_t imports_vec = WASM_ARRAY_VEC(imports);
-  error = wasmtime_instance_new(store, module, &imports_vec, &instance, &trap);
-  if (instance == NULL)
-    exit_with_error("failed to instantiate", error, trap);
+  wasm_extern_vec_t imports = WASM_EMPTY_VEC;
+  own wasm_trap_t* trap = NULL;
+  own wasm_instance_t* instance =
+    wasm_instance_new(store, module, &imports, &trap);
+  if (instance || !trap) {
+    printf("> Error instantiating module, expected trap!\n");
+    return 1;
+  }
 
-  // Lookup our `run` export function
-  printf("Extracting export...\n");
-  wasm_extern_vec_t externs;
-  wasm_instance_exports(instance, &externs);
-  assert(externs.size == 1);
-  wasm_func_t *run = wasm_extern_as_func(externs.data[0]);
-  assert(run != NULL);
-
-  // And call it!
-  printf("Calling export...\n");
-  wasm_val_vec_t args_vec = WASM_EMPTY_VEC;
-  wasm_val_vec_t results_vec = WASM_EMPTY_VEC;
-  error = wasmtime_func_call(run, &args_vec, &results_vec, &trap);
-  if (error != NULL || trap != NULL)
-    exit_with_error("failed to call function", error, trap);
-
-  // Clean up after ourselves at this point
-  printf("All finished!\n");
-  ret = 0;
-
-  wasm_extern_vec_delete(&externs);
-  wasm_instance_delete(instance);
   wasm_module_delete(module);
+
+  // Print result.
+  printf("Printing message...\n");
+  own wasm_name_t message;
+  wasm_trap_message(trap, &message);
+  printf("> %s\n", message.data);
+
+  printf("Printing origin...\n");
+  own wasm_frame_t* frame = wasm_trap_origin(trap);
+  if (frame) {
+    print_frame(frame);
+    wasm_frame_delete(frame);
+  } else {
+    printf("> Empty origin.\n");
+  }
+
+  printf("Printing trace...\n");
+  own wasm_frame_vec_t trace;
+  wasm_trap_trace(trap, &trace);
+  if (trace.size > 0) {
+    for (size_t i = 0; i < trace.size; ++i) {
+      print_frame(trace.data[i]);
+    }
+  } else {
+    printf("> Empty trace.\n");
+  }
+
+  wasm_frame_vec_delete(&trace);
+  wasm_trap_delete(trap);
+  wasm_name_delete(&message);
+
+  // Shut down.
+  printf("Shutting down...\n");
   wasm_store_delete(store);
   wasm_engine_delete(engine);
-  return ret;
-}
 
-static void exit_with_error(const char *message, wasmtime_error_t *error, wasm_trap_t *trap) {
-  fprintf(stderr, "error: %s\n", message);
-  wasm_byte_vec_t error_message;
-  if (error != NULL) {
-    wasmtime_error_message(error, &error_message);
-    wasmtime_error_delete(error);
-  } else {
-    wasm_trap_message(trap, &error_message);
-    wasm_trap_delete(trap);
-  }
-  fprintf(stderr, "%.*s\n", (int) error_message.size, error_message.data);
-  wasm_byte_vec_delete(&error_message);
-  exit(1);
+  // All done.
+  printf("Done.\n");
+  return 0;
 }

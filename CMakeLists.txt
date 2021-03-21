@@ -28,6 +28,8 @@ add_library(asc-cpp-binaryen STATIC ${ASC_CPP_BINARYEN_SRC})
 add_library(asc-cpp-wasmtime STATIC ${ASC_CPP_WASMTIME_SRC})
 add_executable(asc-cpp-test ${ASC_CPP_SRC})
 
+file(COPY src/start.wasm DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
 target_include_directories(asc-cpp-binaryen PUBLIC binaryen/src/)
 target_include_directories(asc-cpp-wasmtime PUBLIC wasm-c-api/include/)
 
